@@ -1,0 +1,48 @@
+# =============================================================================
+# FILE: wrangler.toml
+#
+# DESCRIPTION:
+# Configuration for the standalone, reusable session management worker.
+# This worker is not intended to be public and will only be called by other
+# workers via service bindings.
+# =============================================================================
+
+name = "session-worker"
+main = "src/worker.mjs"
+compatibility_date = "2025-08-01"
+
+workers_dev = false
+preview_urls = false
+
+[placement]
+mode = "smart"
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[minify]
+html = true
+css = true
+js = true
+
+# --- Environment Variables ---
+[vars]
+# Secrets (should be set via `wrangler secret put`)
+SESSION_TIMEOUT_MS = 1800000
+
+
+# --- Durable Object Bindings ---
+# This binding allows the worker to create and access instances of SessionDO.
+[[durable_objects.bindings]]
+# The name of the binding used internally by this worker's code (e.g., env.SESSION_DO).
+name = "SESSION_DO"
+# The name of the exported class in sessionDO.mjs. This must match exactly.
+class_name = "SessionDO"
+
+# --- Database Migrations ---
+# This block tells Cloudflare to register SessionDO as a new class the
+# first time this worker is deployed.
+[[migrations]]
+tag = "v1-initial-install"
+new_sqlite_classes = ["SessionDO"]
