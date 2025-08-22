@@ -4,66 +4,86 @@
  *
  * DESCRIPTION:
  * The main entry point for the standalone session-worker. This worker acts
- * as a lean "smart proxy." It receives a request from a parent worker,
- * identifies or creates the correct SessionDO instance for a user, and
- * delegates the entire request processing to the DO's `processRequest` RPC
- * method.
+ * as an RPC service. It receives an RPC call from a parent worker,
+ * identifies or creates the correct SessionDO instance, and delegates
+ * the request processing to the DO's `processSession` RPC method.
  * =============================================================================
  */
 
-// --- Durable Object and Library Imports ---
+import {WorkerEntrypoint} from "cloudflare:workers";
+
 export {SessionDO} from './sessionDO.mjs';
 import {serverStorage} from './lib/clientServerSession.js';
 import {createBrowserFingerprint, getLocationHint} from './fingerprint.mjs';
 
-export default {
+/**
+ * This class is the main entrypoint for the session worker and exposes
+ * the RPC methods that parent workers can call.
+ */
+export default class extends WorkerEntrypoint {
     /**
-     * The main fetch handler for the session-worker.
-     * @param {Request} request - The incoming request from the parent worker.
-     * @param {object} env - The worker's environment object, containing the SESSION_DO binding.
-     * @param {ExecutionContext} ctx - The execution context.
-     * @returns {Promise<Response>} A response from the SessionDO, containing session data and Set-Cookie headers.
+     * The primary RPC entry point for processing a user session.
+     * @param {Request} request - The original request from the parent worker.
+     * @param {object} env - The environment object with bindings.
+     * @returns {Promise<object>} The full session context from the SessionDO.
      */
-    async fetch(request, env, ctx) {
+    async processSession(request, env) {
         const storageReader = serverStorage();
         const cookieHeader = request.headers.get('Cookie');
-        let doID = storageReader.get('doID', cookieHeader);
-        let isNewDoID = false;
 
-        let doId;
-        if (doID) {
-            // A returning user. Get their DO from the ID in their cookie.
-            doId = env.SESSION_DO.idFromString(doID);
-        } else {
-            // A new user. Create a new DO for them.
-            doId = env.SESSION_DO.newUniqueId();
-            doID = doId.toString();
+        // --- Determine doID and fpID status ---
+        const existingDoID = storageReader.get('doID', cookieHeader);
+        const existingFpID = storageReader.get('fpID', cookieHeader);
+
+        let doID = existingDoID;
+        let isNewDoID = false;
+        if (!doID) {
+            doID = env.SESSION_DO.newUniqueId().toString();
             isNewDoID = true;
         }
 
-        // Get the stub for the SessionDO.
-        const sessionStub = env.SESSION_DO.get(doId, {locationHint: getLocationHint(request.cf)});
+        const fpID = createBrowserFingerprint(request);
+        const isNewFpID = !existingFpID || existingFpID !== fpID;
 
-        // --- Main Logic: Delegate to the DO's RPC method ---
-        // This single call asks the DO to handle the entire session lifecycle
-        // and return a fully-formed Response.
-        const sessionResponse = await sessionStub.processRequest(request.clone());
+        // --- Get the DO Stub ---
+        const doIdFromString = env.SESSION_DO.idFromString(doID);
+        const sessionStub = env.SESSION_DO.get(doIdFromString, {locationHint: getLocationHint(request.cf)});
 
-        // Create a mutable response to add our own headers for fingerprinting and the doID.
-        const finalResponse = new Response(sessionResponse.body, sessionResponse);
+        // 1. Delegate the primary session logic to the DO, passing down doID and fpID.
+        const sessionContext = await sessionStub.processSession(request.clone(), doID, fpID);
 
-        // --- Fingerprint and doID Cookie Logic ---
-        const fingerprint = createBrowserFingerprint(request);
-        const fpCookie = storageReader.set('fpID', fingerprint, {});
-        fpCookie.forEach(h => finalResponse.headers.append('Set-Cookie', h));
-
-        // If we created a new DO, set the persistent doID cookie.
-        if (isNewDoID) {
-            const doIDExpiry = new Date("2038-01-19T03:14:07.000Z");
-            const doIDCookies = storageReader.set('doID', doID, {expires: doIDExpiry});
-            doIDCookies.forEach(h => finalResponse.headers.append('Set-Cookie', h));
+        // 2. Append fpID cookie to the list if it's new.
+        if (isNewFpID) {
+            const fpIdSeconds = parseInt(env.FP_ID_EXPIRATION_SECONDS, 10) || 31536000;
+            const fpCookieOptions = {expires: new Date(Date.now() + fpIdSeconds * 1000)};
+            const fpCookie = storageReader.set('fpID', fpID, fpCookieOptions);
+            sessionContext.setCookieHeaders.push(...fpCookie);
         }
 
-        return finalResponse;
+        // 3. Append the doID cookie if it's new.
+        if (isNewDoID) {
+            const doIdSeconds = parseInt(env.DO_ID_EXPIRATION_SECONDS, 10) || 31536000;
+            const doIDCookieOptions = {expires: new Date(Date.now() + doIdSeconds * 1000)};
+            const doIDCookies = storageReader.set('doID', doID, doIDCookieOptions);
+            sessionContext.setCookieHeaders.push(...doIDCookies);
+        }
+
+        // 4. Enrich the final context with worker-level data before returning.
+        return {
+            ...sessionContext,
+            doID,
+            fpID,
+            isNewDoID,
+            isNewFpID,
+        };
+    }
+
+    /**
+     * A standard fetch handler for health checks or direct HTTP access.
+     */
+    async fetch(request, env, ctx) {
+        return new Response("Divortio Session Worker is operational via RPC.", {
+            headers: {'Content-Type': 'text/plain'}
+        });
     }
 }

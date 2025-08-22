@@ -7,8 +7,6 @@
  * complete lifecycle of a user session. It exposes a rich, expressive public
  * API for granular control and easy debugging, which can be called via RPC
  * from a parent worker.
- *
- * It is designed to be called via RPC from any parent worker.
  * =============================================================================
  */
 
@@ -38,7 +36,6 @@ export class SessionDO extends DurableObject {
      */
     async ensureInitialized() {
         if (!this.initialized) {
-            // Using a transaction for the initial setup.
             await this.ctx.storage.transaction(async (txn) => {
                 await txn.exec(`
                     CREATE TABLE IF NOT EXISTS session_state
@@ -101,13 +98,14 @@ export class SessionDO extends DurableObject {
      * @returns {string[]} An array of `Set-Cookie` header strings.
      */
     generateCookies(newState) {
-        const cIDExpiry = new Date("2038-01-19T03:14:07.000Z");
-        const sessionExpiry = new Date(Date.now() + this.manager.config.sessionTimeout);
+        const sessionCookieSeconds = parseInt(this.env.SESSION_COOKIE_EXPIRATION_SECONDS, 10) || 31536000;
+        const persistentExpiry = new Date(Date.now() + sessionCookieSeconds * 1000);
+        const cookieOptions = {expires: persistentExpiry};
 
         return [
-            ...this.storageHelper.set('cID', newState.cID, {expires: cIDExpiry}),
-            ...this.storageHelper.set('sID', newState.sID, {expires: sessionExpiry}),
-            ...this.storageHelper.set('eID', newState.eID, {expires: sessionExpiry}),
+            ...this.storageHelper.set('cID', newState.cID, cookieOptions),
+            ...this.storageHelper.set('sID', newState.sID, cookieOptions),
+            ...this.storageHelper.set('eID', newState.eID, cookieOptions),
         ];
     }
 
@@ -115,7 +113,6 @@ export class SessionDO extends DurableObject {
 
     /**
      * Runs the entire session lifecycle and returns the complete context.
-     * This is the primary UTILITY method for advanced use cases.
      * @returns {Promise<{newState: object, oldState: object, changes: object, setCookieHeaders: string[]}>}
      */
     async getSessionContext() {
@@ -127,42 +124,37 @@ export class SessionDO extends DurableObject {
     }
 
     /**
-     * The ultimate CONVENIENCE method. Processes the session and returns a
-     * fully-formed Response object with the session data in the body and
-     * cookies in the headers.
-     * @param {Request} request - The original incoming request.
-     * @returns {Promise<Response>}
+     * The primary RPC method. Processes the session, enriches the incoming
+     * request, and returns the core session context.
+     * @param {Request} request - The original incoming request from the parent worker.
+     * @param {string} doID - The Durable Object ID for this user.
+     * @param {string} fpID - The browser fingerprint ID for this user.
+     * @returns {Promise<object>} The core context for the RPC call.
      */
-    async processRequest(request) {
-        try {
-            const {newState, setCookieHeaders} = await this.getSessionContext();
+    async processSession(request, doID, fpID) {
+        const {newState, oldState, changes, setCookieHeaders} = await this.getSessionContext();
 
-            const response = new Response(JSON.stringify(newState), {
-                headers: {'Content-Type': 'application/json'},
-            });
+        const newHeaders = new Headers(request.headers);
 
-            setCookieHeaders.forEach((header) => {
-                response.headers.append('Set-Cookie', header);
-            });
+        // Build the complete Cookie header for the enriched request
+        const cookieParts = [];
+        if (doID) cookieParts.push(`_ss_doID=${doID}`);
+        if (fpID) cookieParts.push(`_ss_fpID=${fpID}`);
+        if (newState.cID) cookieParts.push(`_ss_cID=${newState.cID}`);
+        if (newState.sID) cookieParts.push(`_ss_sID=${newState.sID}`);
+        if (newState.eID) cookieParts.push(`_ss_eID=${newState.eID}`);
 
-            return response;
-        } catch (error) {
-            console.error("Error in SessionDO.processRequest:", error);
-            // On failure, return an error response to the calling worker.
-            return new Response(JSON.stringify({error: "Session processing failed"}), {
-                status: 500,
-                headers: {'Content-Type': 'application/json'}
-            });
+        if (cookieParts.length > 0) {
+            newHeaders.set('Cookie', cookieParts.join('; '));
         }
-    }
+        const enrichedRequest = new Request(request, {headers: newHeaders});
 
-    /**
-     * A fetch handler for direct interaction, testing, or diagnostics.
-     * It directly calls the primary convenience method, ensuring consistent behavior.
-     * @param {Request} request - The incoming HTTP request.
-     * @returns {Promise<Response>}
-     */
-    async fetch(request) {
-        return this.processRequest(request);
+        return {
+            enrichedRequest,
+            ...newState, // Flatten sessionData (cID, sID, eID, etc.)
+            oldState,
+            ...changes, // Flatten changes (isNewClient, isNewSession)
+            setCookieHeaders
+        };
     }
 }

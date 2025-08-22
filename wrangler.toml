@@ -21,19 +21,25 @@ mode = "smart"
 [observability]
 enabled = true
 head_sampling_rate = 1
+
 # --- Environment Variables ---
 [vars]
-# Secrets (should be set via `wrangler secret put`)
-SESSION_TIMEOUT_MS = 1800000
+# Inactivity timeout for a session to be considered "expired" on the server-side.
+SESSION_TIMEOUT_MS = 1800000 # 30 minutes
 
+# --- Cookie Expiration Settings (in seconds) ---
+# Default: 31,536,000 seconds (1 year)
+# Used for cID, sID, and eID cookies to make them persistent on the client.
+SESSION_COOKIE_EXPIRATION_SECONDS = 31536000
 
-# --- Durable Object Bindings ---
-# This binding allows the worker to create and access instances of SessionDO.
-[[durable_objects.bindings]]
-# The name of the binding used internally by this worker's code (e.g., env.SESSION_DO).
-name = "SESSION_DO"
-# The name of the exported class in sessionDO.mjs. This must match exactly.
-class_name = "SessionDO"
+# Default: 31,536,000 seconds (1 year)
+# Expiration for the browser fingerprint cookie.
+FP_ID_EXPIRATION_SECONDS = 31536000
+
+# Default: 31,536,000 seconds (1 year)
+# Expiration for the Durable Object locator cookie.
+DO_ID_EXPIRATION_SECONDS = 31536000
+
 
 # --- Database Migrations ---
 # This block tells Cloudflare to register SessionDO as a new class the

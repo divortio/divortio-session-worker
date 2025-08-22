@@ -6,6 +6,8 @@
  * A universal, stateless JavaScript library for robustly managing a hierarchy
  * of client, session, and event identifiers. This library contains the pure
  * business logic for session management and is designed to be storage-agnostic.
+ * It requires the use of `pushID`-compatible identifiers, as it relies on
+ * their embedded timestamps to calculate session timeouts.
  *
  * It is intended to be used by a stateful controller, like a Cloudflare Durable
  * Object, which provides a `storageHandler` to read the previous state.
@@ -71,12 +73,6 @@ import {pushID} from './pushID.js';
 
 /**
  * @typedef {object} ProcessedSession
- * @property {string} cID - The current Client ID.
- * @property {string} sID - The current Session ID.
- * @property {string} eID - The newly generated Event ID.
- * @property {Date} clientTime - The timestamp of the cID.
- * @property {Date} sessionTime - The timestamp of the sID.
- * @property {Date} eventTime - The timestamp of the eID.
  * @property {SessionState} newState - An object representing the current state.
  * @property {SessionState} oldState - An object representing the state before processing.
  * @property {SessionChanges} changes - A summary of what changed during processing.
@@ -159,7 +155,7 @@ export const sessionManager = (config = {}) => {
         const changes = {isNewClient, isNewSession};
 
         // 6. Return the comprehensive result object
-        return {...newState, newState, oldState, changes};
+        return {newState, oldState, changes};
     };
 
     return {process, config: finalConfig};
