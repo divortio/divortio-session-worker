@@ -3,33 +3,12 @@
  * FILE: src/sessionDO.mjs
  *
  * DESCRIPTION:
- * Defines the `SessionDO` class for the standalone session-worker. This
- * Durable Object is a stateful, self-contained service responsible for
- * managing the complete lifecycle of a user session (cID, sID, eID).
+ * Defines the `SessionDO` class, a stateful service responsible for the
+ * complete lifecycle of a user session. It exposes a rich, expressive public
+ * API for granular control and easy debugging, which can be called via RPC
+ * from a parent worker.
  *
- * It persists the session state in its own private SQLite storage, ensuring
- * that a user's session is durable and consistent across requests. It is
- * designed to be called via RPC from any parent worker.
- *
- * @example
- * // --- How this DO is used by a parent worker (e.g., WAFu) ---
- *
- * // 1. The parent worker gets the stub for a user's SessionDO
- * const doId = env.SESSION_SERVICE.idFromString(doID_from_cookie);
- * const sessionStub = env.SESSION_SERVICE.get(doId);
- *
- * // 2. It calls the `process` RPC method
- * const { sessionData, setCookieHeaders } = await sessionStub.process({
- * // No cookieHeader is needed, as this DO manages its own state
- * config: {
- * sessionTimeout: env.SESSION_TIMEOUT_MS,
- * // `useStubs` is now false by default
- * }
- * });
- *
- * // 3. The parent worker uses the returned session data and cookies.
- * // -> sessionData: { newState: { cID, sID, eID }, ... }
- * // -> setCookieHeaders: ["__ss_cID=...", "__cs_cID=..."]
+ * It is designed to be called via RPC from any parent worker.
  * =============================================================================
  */
 
@@ -46,7 +25,11 @@ export class SessionDO extends DurableObject {
         super(ctx, env);
         this.ctx = ctx;
         this.env = env;
-        this.storageHelper = serverStorage(); // For generating cookie strings
+        this.storageHelper = serverStorage();
+        this.manager = sessionManager({
+            sessionTimeout: parseInt(this.env.SESSION_TIMEOUT_MS, 10) || 1800000,
+            useStubs: false,
+        });
         this.initialized = false;
     }
 
@@ -55,102 +38,131 @@ export class SessionDO extends DurableObject {
      */
     async ensureInitialized() {
         if (!this.initialized) {
-            await this.ctx.storage.sql.exec(`
-                CREATE TABLE IF NOT EXISTS session_state
-                    (
-                        key                    TEXT
-                            PRIMARY KEY, value TEXT
-                    )
-            `);
+            // Using a transaction for the initial setup.
+            await this.ctx.storage.transaction(async (txn) => {
+                await txn.exec(`
+                    CREATE TABLE IF NOT EXISTS session_state
+                        (
+                            key                    TEXT
+                                PRIMARY KEY, value TEXT
+                        )
+                `);
+            });
             this.initialized = true;
         }
     }
 
+    // --- Granular Public API Methods ---
+
     /**
-     * The primary RPC method. It reads the session state from its own persistent
-     * storage, processes it, saves the new state, and returns the results.
-     * @param {object} options - The options for processing.
-     * @param {object} options.config - Configuration passed from the parent worker.
-     * @param {string} options.config.sessionTimeout - The session timeout in milliseconds.
-     * @returns {Promise<{sessionData: object, setCookieHeaders: string[]}>} An object containing the new session data and the `Set-Cookie` headers.
+     * Retrieves the raw, currently persisted session state from storage.
+     * @returns {Promise<{cID: string|null, sID: string|null, eID: string|null}>}
      */
-    async process({config}) {
+    async getState() {
         await this.ensureInitialized();
-
-        // Initialize the sessionManager, ensuring stubs are disabled.
-        const manager = sessionManager({
-            sessionTimeout: parseInt(config.sessionTimeout, 10) || 1800000, // 30 min default
-            useStubs: false, // Per your requirement
-        });
-
-        // This storage handler interacts with this DO's own private, persistent storage.
-        const persistentStorageHandler = {
-            get: (key) => this.ctx.storage.get(key),
-            set: (key, value) => this.ctx.storage.put(key, value),
-        };
-
-        // Load the current state from durable storage to pass to the pure sessionManager function.
         const [cID, sID, eID] = await Promise.all([
-            persistentStorageHandler.get('cID'),
-            persistentStorageHandler.get('sID'),
-            persistentStorageHandler.get('eID')
+            this.ctx.storage.get('cID'),
+            this.ctx.storage.get('sID'),
+            this.ctx.storage.get('eID')
         ]);
+        return {cID, sID, eID};
+    }
 
+    /**
+     * A pure, stateless method that applies session logic to a given state.
+     * @param {{cID: string|null, sID: string|null, eID: string|null}} currentState - The state to process.
+     * @returns {object} The processing result: { newState, oldState, changes }.
+     */
+    processState(currentState) {
         const inMemoryStorageHandler = {
-            get: (key) => {
-                if (key === 'cID') return cID;
-                if (key === 'sID') return sID;
-                if (key === 'eID') return eID;
-                return null;
-            },
+            get: (key) => currentState[key] || null,
             set: () => {
-            }, // The pure library doesn't need to set.
+            },
         };
+        return this.manager.process({storageHandler: inMemoryStorageHandler});
+    }
 
-        // Run the pure session logic.
-        const sessionData = manager.process({storageHandler: inMemoryStorageHandler});
+    /**
+     * Writes the new session state to durable storage.
+     * @param {object} newState - The new session state to persist.
+     * @returns {Promise<void>}
+     */
+    async persistState(newState) {
+        await this.ctx.storage.put({
+            cID: newState.cID,
+            sID: newState.sID,
+            eID: newState.eID,
+        });
+    }
 
-        // Persist the new state back to this object's durable storage.
-        const {newState} = sessionData;
-        await Promise.all([
-            persistentStorageHandler.set('cID', newState.cID),
-            persistentStorageHandler.set('sID', newState.sID),
-            persistentStorageHandler.set('eID', newState.eID)
-        ]);
-
-        // Generate the `Set-Cookie` headers to be sent back to the parent worker.
+    /**
+     * Generates the `Set-Cookie` header strings for a given session state.
+     * @param {object} newState - The session state to generate cookies for.
+     * @returns {string[]} An array of `Set-Cookie` header strings.
+     */
+    generateCookies(newState) {
         const cIDExpiry = new Date("2038-01-19T03:14:07.000Z");
-        const sessionExpiry = new Date(Date.now() + manager.config.sessionTimeout);
+        const sessionExpiry = new Date(Date.now() + this.manager.config.sessionTimeout);
 
-        const setCookieHeaders = [
+        return [
             ...this.storageHelper.set('cID', newState.cID, {expires: cIDExpiry}),
             ...this.storageHelper.set('sID', newState.sID, {expires: sessionExpiry}),
             ...this.storageHelper.set('eID', newState.eID, {expires: sessionExpiry}),
         ];
+    }
 
-        return {sessionData, setCookieHeaders};
+    // --- High-Level "All-in-One" Public Methods ---
+
+    /**
+     * Runs the entire session lifecycle and returns the complete context.
+     * This is the primary UTILITY method for advanced use cases.
+     * @returns {Promise<{newState: object, oldState: object, changes: object, setCookieHeaders: string[]}>}
+     */
+    async getSessionContext() {
+        const currentState = await this.getState();
+        const {newState, oldState, changes} = this.processState(currentState);
+        await this.persistState(newState);
+        const setCookieHeaders = this.generateCookies(newState);
+        return {newState, oldState, changes, setCookieHeaders};
     }
 
     /**
-     * A simple fetch handler for direct interaction or testing.
+     * The ultimate CONVENIENCE method. Processes the session and returns a
+     * fully-formed Response object with the session data in the body and
+     * cookies in the headers.
+     * @param {Request} request - The original incoming request.
+     * @returns {Promise<Response>}
+     */
+    async processRequest(request) {
+        try {
+            const {newState, setCookieHeaders} = await this.getSessionContext();
+
+            const response = new Response(JSON.stringify(newState), {
+                headers: {'Content-Type': 'application/json'},
+            });
+
+            setCookieHeaders.forEach((header) => {
+                response.headers.append('Set-Cookie', header);
+            });
+
+            return response;
+        } catch (error) {
+            console.error("Error in SessionDO.processRequest:", error);
+            // On failure, return an error response to the calling worker.
+            return new Response(JSON.stringify({error: "Session processing failed"}), {
+                status: 500,
+                headers: {'Content-Type': 'application/json'}
+            });
+        }
+    }
+
+    /**
+     * A fetch handler for direct interaction, testing, or diagnostics.
+     * It directly calls the primary convenience method, ensuring consistent behavior.
      * @param {Request} request - The incoming HTTP request.
      * @returns {Promise<Response>}
      */
     async fetch(request) {
-        const {sessionData, setCookieHeaders} = await this.process({
-            config: {
-                sessionTimeout: this.env.SESSION_TIMEOUT_MS, // Assumes env vars are set for testing
-            }
-        });
-
-        const response = new Response(JSON.stringify(sessionData, null, 2), {
-            headers: {'Content-Type': 'application/json'},
-        });
-
-        setCookieHeaders.forEach((header) => {
-            response.headers.append('Set-Cookie', header);
-        });
-
-        return response;
+        return this.processRequest(request);
     }
 }
