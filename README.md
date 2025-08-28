@@ -1,16 +1,15 @@
 # 🚀 divortio-session-worker
 
-![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)
+![Version](https://img.shields.io/badge/version-5.0.0-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 A standalone, resilient, and highly-performant session management service built on Cloudflare Workers and Durable
 Objects. This worker is designed to be used as a "plug-and-play" service by any other Cloudflare Worker, providing
 robust, stateful user session tracking without adding complex logic to the parent application.
 
-It now exposes a powerful and convenient **RPC (Remote Procedure Call) API**, allowing a parent worker to receive a
-fully enriched request and a rich session context object with a single, intuitive function call. The service handles the
-entire session lifecycle (`doID`, `fpID`, `cID`, `sID`, `eID`) and is completely decoupled from the parent worker's
-business logic.
+It exposes a powerful and convenient **RPC (Remote Procedure Call) API** that is hardened against common failures. It
+uses a **Hybrid Naming** pattern for Durable Objects to provide race-condition-proof session creation for new users and
+maximum performance for returning users.
 
 ---
 
@@ -18,22 +17,21 @@ business logic.
 
 * **🔌 Plug-and-Play**: Integrate robust session management into any Cloudflare Worker with a single service binding and
   one line of code.
-* **🚀 Expressive RPC API**: A single `processSession(request)` call provides an enriched request object and a complete
-  session context, minimizing boilerplate in the parent worker.
-* **🔗 Decoupled Architecture**: The parent worker doesn't need to know anything about Durable Objects. It simply makes
-  an RPC call to the service, which handles all the complex stateful logic internally.
-* **💾 Stateful & Persistent**: Uses a Durable Object (`SessionDO`) with its own private SQLite storage to persist
-  session data, ensuring user sessions are durable and consistent.
-* **🚀 High Performance**: Leverages the performance of Cloudflare's edge network. The stateless worker runs in every
-  data center, and the stateful `SessionDO` is automatically placed near the user to minimize latency.
-* **🍪 Secure & Persistent Cookies**: Uses a dual-cookie strategy (`HttpOnly` server-side cookies and client-accessible
-  cookies) for a secure-by-default posture, with long-lived expirations controlled via `wrangler.toml`.
+* **🚀 Expressive & Resilient RPC API**: A single `processSession(request)` call provides an enriched request and a
+  complete session context. It includes graceful fallbacks to ensure the session service's failure never crashes the
+  parent application.
+* **🔐 Race-Condition Proof**: Uses a deterministic, colo-agnostic fingerprint to name Durable Objects for new users,
+  guaranteeing session consistency even under concurrent initial requests.
+* **⚡️ High-Performance Lookups**: Uses the stable `cID` to name Durable Objects for returning users, providing the most
+  direct and performant path to their session state.
+* **🍪 Configurable & Persistent Cookies**: Uses a secure, dual-cookie (`HttpOnly` and client-side) strategy with
+  long-lived expirations. All cookie names, prefixes, and the domain are fully configurable in `wrangler.toml`.
 
 ---
 
 ## 🛠️ Deployment Instructions
 
-*(This section remains the same as the previous version)*
+*(This section remains the same)*
 
 ### Step 1: Fork and Clone the Repository
 
@@ -59,11 +57,12 @@ business logic.
 
 Your `divortio-session-worker` is now live and ready to be used by other workers.
 
+
 ---
 
 ## 💡 How to Use This Service from a Parent Worker
 
-Integrating this session service is now simpler than ever thanks to the RPC API.
+Integrating this session service is now simpler and safer than ever thanks to the hardened RPC API.
 
 ### Step 1: Bind the Service in the Parent Worker
 
@@ -84,10 +83,11 @@ service = "divortio-session-worker"
 
 ### Step 2: Call the Service from Your Parent Worker's Code
 
-In your parent worker's `fetch` handler, make a single RPC call to the `processSession` method. You can destructure the
-result to get direct access to all session properties, or capture it in a single `session` object for convenience.
+In your parent worker's `fetch` handler, make a single RPC call to the `processSession` method. The service is designed
+to be resilient; if it fails, it will return a neutral, "empty" session context, allowing your application to proceed
+without crashing.
 
-**`src/worker.mjs` (of parent worker):**
+**`parent-worker-example.mjs`:**
 
 ```javascript
 /**
@@ -110,65 +110,37 @@ function applySessionCookies(response, setCookieHeaders) {
 
 export default {
     async fetch(request, env, ctx) {
-        // 1. Get the complete session context by destructuring the RPC response.
-        const { 
-            enrichedRequest,
-            cID, 
-            sID, 
-            eID, 
-            oldState, 
-            isNewClient, 
-            isNewSession, 
-            isNewDoID, 
-            isNewFpID,
-            doID, 
-            fpID,
-            setCookieHeaders 
-        } = await env.SESSION_SERVICE.processSession(request);
+        // 1. Get the complete, rich session context in a single RPC call.
+        const session = await env.SESSION_SERVICE.processSession(request);
 
-        /*
-         * Alternatively, you can capture the entire context in one object:
-         * const session = await env.SESSION_SERVICE.processSession(request);
-         * console.log(session.cID, session.isNewClient, etc.);
-        */
+        // Graceful Fallback Check: If cID is null, the session service may have
+        // encountered an error, but the parent application can still proceed.
+        if (session.cID === null) {
+            console.warn("Could not retrieve session context. Proceeding without session.");
+        }
 
         // --- Your Application Logic Starts Here ---
 
-        // Example: Perform detailed logging or analytics based on the rich context.
-        if (isNewClient) {
-            console.log(`New client detected! Assigning cID: ${cID}. Fingerprint: ${fpID}`);
+        if (session.isNewClient) {
+            console.log(`New client detected! fpID: ${session.fpID}`);
         }
-        if (isNewSession) {
-            console.log(`New session started for client ${cID}. Previous sID: ${oldState.sID}, New sID: ${sID}`);
-        }
-        if (isNewFpID) {
-            console.log(`Client fingerprint has changed. New fpID: ${fpID}`);
-        }
-
-        // Example: Use the enrichedRequest for a downstream logging service that needs full context.
-        // ctx.waitUntil(env.LOGGER.log(enrichedRequest));
         
-        const appResponse = await yourApplicationLogic(enrichedRequest, { cID, sID, eID });
+        const appResponse = await yourApplicationLogic(session.enrichedRequest, session);
         
         // --- End of Application Logic ---
 
-        // 2. Apply all necessary cookies to the final response with one line.
-        return applySessionCookies(appResponse, setCookieHeaders);
+        // 2. Apply all necessary cookies to the final response.
+        return applySessionCookies(appResponse, session.setCookieHeaders);
     }
 };
 
-/**
- * Your main application logic, which receives the enriched request and session data.
- */
 async function yourApplicationLogic(request, session) {
-    const body = `
-        Hello, world!
-        Client ID: ${session.cID}
-        Session ID: ${session.sID}
-    `;
+    const body = `Hello, world! Your Session ID is: ${session.sID || 'N/A'}`;
     return new Response(body, { headers: { 'Content-Type': 'text/plain' } });
 }
 ```
+
+---
 
 ## 📖 API Documentation
 
@@ -179,47 +151,38 @@ The service exposes a single, powerful RPC method.
 This is the primary method for interacting with the session service.
 
 * **Parameters**:
-    * `request`: The original `Request` object from the parent worker's `fetch` handler.
-* **Returns**: `Promise<object>` - A Promise that resolves to a rich session context object with the following
-  properties:
+    * `request`: The original `Request` object.
+* **Returns**: `Promise<object>` - A Promise that resolves to a rich session context object. **In the event of a
+  critical failure, this method will return a fallback context where most properties are `null` or empty.**
 
-| Property | Type | Description |
-| --- | --- | --- |
-| `enrichedRequest` | `Request` | A new `Request` object, identical to the original but with a `Cookie` header containing all identifiers (`_ss_doID`, `_ss_fpID`, etc.). |
-| `cID` | `string` | The long-term Client ID for the user's browser. |
-| `sID` | `string` | The ID for the current session. Rotates based on server-side inactivity. |
-| `eID` | `string` | The unique ID for this specific event/request. |
-| `clientTime` | `Date` | The creation timestamp of the `cID`. |
-| `sessionTime` | `Date` | The creation timestamp of the `sID`. |
-| `eventTime` | `Date` | The creation timestamp of the `eID`. |
-| `oldState` | `object` | An object representing the session state *
-before* this request was processed. Contains `cID`, `sID`, `eID`, etc. from the previous event. |
-| `isNewClient` | `boolean` | `true` if a `cID` was created for the first time. |
-| `isNewSession` | `boolean` | `true` if the session timed out and a new `sID` was generated. |
-| `isNewDoID` | `boolean` | `true` if a new Durable Object ID was created for this user. |
-| `isNewFpID` | `boolean` | `true` if the browser fingerprint was missing or has changed since the last request. |
-| `doID` | `string` | The ID of the Durable Object instance handling this user's state. |
-| `fpID` | `string` | The calculated browser fingerprint for the current request. |
-| `setCookieHeaders` | `Array` | An array of `Set-Cookie` header strings that **
-must** be appended to the final response to the browser. |
+| Property            | Type             | Description                                                                                                                             |
+| ------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `enrichedRequest`   | `Request`        | A new `Request` object with a `Cookie` header containing all identifiers.                                                               |
+| `cID`               | `string \| null` | The long-term Client ID for the user's browser.                                                                                         |
+| `sID`               | `string \| null` | The ID for the current session.                                                                                                         |
+| `eID`               | `string \| null` | The unique ID for this specific event/request.                                                                                          |
+| `oldState`          | `object`         | The session state *
+before* this request was processed.                                                                                  |
+| `isNewClient`       | `boolean`        | `true` if a `cID` was created for the first time.                                                                                       |
+| `isNewSession`      | `boolean`        | `true` if the session timed out and a new `sID` was generated.                                                                          |
+| `isNewDoID`         | `boolean`        | `true` if this request resulted in interacting with a DO named by a fingerprint.                                                        |
+| `isNewFpID`         | `boolean`        | `true` if the browser fingerprint was missing or has changed.                                                                           |
+| `doID`              | `string \| null` | The name of the DO instance handling this user's state (either a `cID` or a stable key).                                                |
+| `fpID`              | `string \| null` | The calculated browser fingerprint for the current request.                                                                             |
+| `setCookieHeaders`  | `Array`          | An array of `Set-Cookie` header strings to be appended to the final response.                                                           |
 
 ---
 
 ## 🍪 Understanding the Identifiers & Cookies
 
-The service sets several **long-lived, persistent cookies** to manage the session lifecycle. The concept of a "session"
-is a server-side construct determined by user activity, not by the lifespan of a browser cookie. It uses a dual-cookie
-strategy for security:
+The service sets several **long-lived, persistent cookies**. The concept of a "session" is a server-side construct
+determined by user activity, not by the lifespan of a browser cookie. Cookie names are fully configurable
+via `wrangler.toml`.
 
-* **`_ss_` (Server-Side) Cookies**: `HttpOnly`, secure, and inaccessible to client-side scripts. This is the source of
-  truth for the server.
-* **`_cs_` (Client-Side) Cookies**: A read-only copy for non-sensitive UI purposes, accessible to client-side scripts.
-
-| ID | Cookie Names | Purpose |
-| --- | --- | --- |
-| `doID` | `_ss_doID`, `_cs_doID` | A persistent identifier that points to the specific Durable Object instance managing this user's state. |
-| `fpID` | `_ss_fpID`, `_cs_fpID` | A high-entropy browser fingerprint that serves as a probabilistic identifier to track user activity. |
-| `cID` | `_ss_cID`, `_cs_cID` | A persistent identifier for a unique browser or client. This represents the "user" from the perspective of the session manager. |
-| `sID` | `_ss_sID`, `_cs_sID` | An identifier representing a single user session. This ID is rotated on the server after a configurable period of inactivity, marking a new session. |
-| `eID` | `_ss_eID`, `_cs_eID` | The most granular identifier. A new `eID` is generated for every single request, serving as the activity marker for session timeout calculations. |
+| ID     | Default Key | Purpose                                                                                 |
+| ------ | ----------- | --------------------------------------------------------------------------------------- |
+| `cID`  | `cID`       | A persistent identifier for a unique browser or client.                                 |
+| `sID`  | `sID`       | An identifier representing a single user session. Rotated on the server after inactivity. |
+| `eID`  | `eID`       | A unique identifier for every single request.                                           |
+| `fpID` | `fpID`      | A high-entropy browser fingerprint that serves as a probabilistic identifier.           |
 

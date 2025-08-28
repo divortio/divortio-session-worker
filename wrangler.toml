@@ -22,28 +22,41 @@ mode = "smart"
 enabled = true
 head_sampling_rate = 1
 
+
 # --- Environment Variables ---
 [vars]
 # Inactivity timeout for a session to be considered "expired" on the server-side.
 SESSION_TIMEOUT_MS = 1800000 # 30 minutes
 
+# --- Cookie Naming & Domain Configuration ---
+# Optional application-specific prefix for all cookies (e.g., "myapp").
+COOKIE_APP_PREFIX = ""
+# Prefix for secure, server-side (HttpOnly) cookies.
+SERVER_COOKIE_PREFIX = "_ss_"
+# Prefix for client-side accessible cookies.
+CLIENT_COOKIE_PREFIX = "_cs_"
+# IMPORTANT: Set this to your root domain, preceded by a dot, to enable
+# cross-domain sessions (e.g., ".example.com"). Leave blank for single-domain.
+COOKIE_DOMAIN = ""
+
+# --- Cookie Keys Configuration ---
+CID_COOKIE_NAME = "cID"
+SID_COOKIE_NAME = "sID"
+EID_COOKIE_NAME = "eID"
+FPID_COOKIE_NAME = "fpID"
+
+
 # --- Cookie Expiration Settings (in seconds) ---
-# Default: 31,536,000 seconds (1 year)
-# Used for cID, sID, and eID cookies to make them persistent on the client.
-SESSION_COOKIE_EXPIRATION_SECONDS = 31536000
+SESSION_COOKIE_EXPIRATION_SECONDS = 31536000 # 1 year
+FP_ID_EXPIRATION_SECONDS = 31536000 # 1 year
 
-# Default: 31,536,000 seconds (1 year)
-# Expiration for the browser fingerprint cookie.
-FP_ID_EXPIRATION_SECONDS = 31536000
 
-# Default: 31,536,000 seconds (1 year)
-# Expiration for the Durable Object locator cookie.
-DO_ID_EXPIRATION_SECONDS = 31536000
-
+# --- Durable Object Bindings ---
+[[durable_objects.bindings]]
+name = "SESSION_DO"
+class_name = "SessionDO"
 
 # --- Database Migrations ---
-# This block tells Cloudflare to register SessionDO as a new class the
-# first time this worker is deployed.
 [[migrations]]
 tag = "v1-initial-install"
 new_sqlite_classes = ["SessionDO"]

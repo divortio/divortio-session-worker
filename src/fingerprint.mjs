@@ -3,84 +3,60 @@
  * FILE: src/fingerprint.mjs
  *
  * DESCRIPTION:
- * A utility module for creating a high-entropy, stable browser fingerprint
- * from various request properties. This is used as a probabilistic
- * identifier to track user activity when cookies are not available or have
- * been blocked by the client. This version uses the robust `hashIsh.js`
- * library to generate the hash, ensuring a higher degree of uniqueness.
- *
- * @example
- * // --- How this module is used by the main handler (handler.mjs) ---
- *
- * import { createBrowserFingerprint } from './fingerprint.mjs';
- *
- * export default {
- * async fetch(request, env, ctx) {
- * // Check for an existing fingerprint cookie
- * let fingerprint = storageReader.get('fpID', request.headers.get('Cookie'));
- *
- * // If the cookie is not present, generate a new fingerprint
- * if (!fingerprint) {
- * fingerprint = createBrowserFingerprint(request);
- * }
- *
- * // The fingerprint can now be used for logging or routing
- * console.log(`Request fingerprint: ${fingerprint}`);
- * }
- * }
+ * A utility module for creating high-entropy, stable browser fingerprints
+ * from various request properties.
  * =============================================================================
  */
 
-// Import the hashing utility from our existing session management library
 import {hashIsh} from './lib/hashIsh.js';
 
-// Use the same character set as our pushID library for consistency
 const HASH_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz~';
 
 /**
- * Creates a stable, high-entropy browser fingerprint from various request properties.
- *
- * @param {Request} request - The original incoming request object from which to derive the fingerprint.
- * @returns {string} A 16-character, stable hash representing the browser fingerprint.
- * @example
- * const request = new Request("https://example.com", {
- * headers: {
- * 'cf-connecting-ip': '198.51.100.1',
- * 'user-agent': 'Mozilla/5.0 (...) AppleWebKit/537.36 (...)',
- * 'accept-language': 'en-US,en;q=0.9',
- * 'accept-encoding': 'gzip, deflate, br'
- * },
- * cf: {
- * tlsCipher: 'AEAD-AES128-GCM-SHA256',
- * httpProtocol: 'HTTP/2',
- * colo: 'EWR'
- * }
- * });
- *
- * const fingerprint = createBrowserFingerprint(request);
- * // -> fingerprint will be a 16-character hash like "aBcDeFgHiJkLmNoP"
+ * Gathers common, high-entropy data points from the request.
+ * @private
+ * @param {Request} request - The original incoming request object.
+ * @param {boolean} [includeColo=true] - Whether to include the Cloudflare colo.
+ * @returns {object} An object with raw fingerprint data.
+ */
+function getRawFingerprintData(request, includeColo = true) {
+    const data = {
+        ip: request.headers.get('cf-connecting-ip') || '',
+        userAgent: request.headers.get('user-agent') || '',
+        acceptLang: request.headers.get('accept-language') || '',
+        acceptEnc: request.headers.get('accept-encoding') || '',
+        tlsCipher: request.cf?.tlsCipher || '',
+        httpProtocol: request.cf?.httpProtocol || '',
+    };
+    if (includeColo && request.cf?.colo) {
+        data.colo = request.cf.colo;
+    }
+    return data;
+}
+
+/**
+ * Creates a stable, high-entropy browser fingerprint (fpID).
+ * This version INCLUDES the colo and is best used for analytics.
+ * @param {Request} request - The original incoming request object.
+ * @returns {string} A 16-character hash representing the browser fingerprint.
  */
 export function createBrowserFingerprint(request) {
-    // Gather as many high-entropy data points as possible from the request.
-    const ip = request.headers.get('cf-connecting-ip') || '';
-    const userAgent = request.headers.get('user-agent') || '';
-    const acceptLang = request.headers.get('accept-language') || '';
-    const acceptEnc = request.headers.get('accept-encoding') || '';
-
-    // Use TLS cipher, HTTP protocol, and colo from the Cloudflare-specific object.
-    const tlsCipher = request.cf?.tlsCipher || '';
-    const httpProtocol = request.cf?.httpProtocol || '';
-    const colo = request.cf?.colo || ''; // User's closest data center
-
-    // Combine all data points into a single object for stable serialization by hashIsh.
-    const rawFingerprintData = {
-        ip, userAgent, acceptLang, acceptEnc, tlsCipher, httpProtocol, colo
-    };
-
-    // Use the robust hashIsh function to generate a 16-character hash.
-    // This provides significantly more entropy than a simple base36 hash.
-    return hashIsh(rawFingerprintData, 16, HASH_CHARS);
+    const rawData = getRawFingerprintData(request, true);
+    return hashIsh(rawData, 16, HASH_CHARS);
 }
+
+/**
+ * Creates a deterministic, stable key for locating a Durable Object.
+ * This version EXCLUDES the colo to prevent race conditions for new users
+ * whose initial requests may hit different data centers.
+ * @param {Request} request - The original incoming request object.
+ * @returns {string} A 16-character hash suitable for a DO name.
+ */
+export function createStableDurableObjectKey(request) {
+    const rawData = getRawFingerprintData(request, false);
+    return hashIsh(rawData, 16, HASH_CHARS);
+}
+
 
 /**
  * Maps a request's geographic data to a supported Durable Object location hint.
