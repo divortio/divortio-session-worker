@@ -3,16 +3,14 @@
 #
 # DESCRIPTION:
 # Configuration for the standalone, reusable session management worker.
-# This worker is not intended to be public and will only be called by other
-# workers via service bindings.
 # =============================================================================
 
 name = "divortio-session-worker"
 main = "src/worker.mjs"
-compatibility_date = "2025-08-15"
+compatibility_date = "2025-08-22"
+compatibility_flags = ["rpc"] # Enable the RPC API
 
 workers_dev = false
-preview_urls = false
 minify = true
 
 [placement]
@@ -22,21 +20,15 @@ mode = "smart"
 enabled = true
 head_sampling_rate = 1
 
-
 # --- Environment Variables ---
 [vars]
 # Inactivity timeout for a session to be considered "expired" on the server-side.
 SESSION_TIMEOUT_MS = 1800000 # 30 minutes
 
 # --- Cookie Naming & Domain Configuration ---
-# Optional application-specific prefix for all cookies (e.g., "myapp").
 COOKIE_APP_PREFIX = ""
-# Prefix for secure, server-side (HttpOnly) cookies.
 SERVER_COOKIE_PREFIX = "_ss_"
-# Prefix for client-side accessible cookies.
 CLIENT_COOKIE_PREFIX = "_cs_"
-# IMPORTANT: Set this to your root domain, preceded by a dot, to enable
-# cross-domain sessions (e.g., ".example.com"). Leave blank for single-domain.
 COOKIE_DOMAIN = ""
 
 # --- Cookie Keys Configuration ---
@@ -45,16 +37,35 @@ SID_COOKIE_NAME = "sID"
 EID_COOKIE_NAME = "eID"
 FPID_COOKIE_NAME = "fpID"
 
-
 # --- Cookie Expiration Settings (in seconds) ---
 SESSION_COOKIE_EXPIRATION_SECONDS = 31536000 # 1 year
 FP_ID_EXPIRATION_SECONDS = 31536000 # 1 year
+
+# --- Durable Object Garbage Collection ---
+DO_TTL_SECONDS = 7776000 # 90 days
 
 
 # --- Durable Object Bindings ---
 [[durable_objects.bindings]]
 name = "SESSION_DO"
 class_name = "SessionDO"
+
+# --- Analytics Engine Bindings ---
+# Dataset of 1 event per new client (cID)
+[[analytics_engine_datasets]]
+binding = "STATS_CLIENT"
+dataset = "SESSION_CLIENTS"
+
+# Dataset of 1 event per new session (sID)
+[[analytics_engine_datasets]]
+binding = "STATS_SESSION"
+dataset = "SESSION_SESSIONS"
+
+# Dataset of 1 event per new event (eID)
+[[analytics_engine_datasets]]
+binding = "STATS_EVENTS"
+dataset = "SESSION_EVENTS"
+
 
 # --- Database Migrations ---
 [[migrations]]

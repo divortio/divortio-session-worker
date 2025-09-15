@@ -4,15 +4,15 @@
  *
  * DESCRIPTION:
  * Defines the `SessionDO` class, a stateful service responsible for the
- * complete lifecycle of a user session. It is designed to be self-sufficient,
- * rehydrating its state from trusted cookies if it wakes up empty after
- * garbage collection.
+ * complete lifecycle of a user session. This version is simplified to rely on
+ * the automatic table management of the SQLite-backed KV API.
  * =============================================================================
  */
 
 import {DurableObject} from "cloudflare:workers";
 import {sessionManager} from './lib/sessionManager.js';
 import {serverStorage} from './lib/clientServerSession.js';
+import {enrichRequest} from './lib/enrichRequest.mjs';
 import {CID_COOKIE, SID_COOKIE, EID_COOKIE, FPID_COOKIE} from './lib/constants.mjs';
 
 export class SessionDO extends DurableObject {
@@ -20,56 +20,67 @@ export class SessionDO extends DurableObject {
         super(ctx, env);
         this.ctx = ctx;
         this.env = env;
-
+        this.inMemoryState = null;
         this.storageHelper = serverStorage({
             appPrefix: this.env.COOKIE_APP_PREFIX,
             serverPrefix: this.env.SERVER_COOKIE_PREFIX,
             clientPrefix: this.env.CLIENT_COOKIE_PREFIX,
         });
-
         this.manager = sessionManager();
-        this.initialized = false;
     }
 
-    async ensureInitialized() {
-        if (!this.initialized) {
-            try {
-                await this.ctx.storage.transaction(async (txn) => {
-                    await txn.exec(`CREATE TABLE IF NOT EXISTS session_state
-                                        (
-                                            key                    TEXT
-                                                PRIMARY KEY, value TEXT
-                                        )`);
-                });
-                this.initialized = true;
-            } catch (error) {
-                console.error(`SessionDO [${this.ctx.id.toString()}] failed to initialize storage:`, error);
+    async alarm() {
+        try {
+            await this.ctx.storage.deleteAll();
+            console.log(`SessionDO [${this.ctx.id.toString()}] storage deleted due to inactivity.`);
+        } catch (error) {
+            console.error(`SessionDO [${this.ctx.id.toString()}] failed to delete storage in alarm:`, error);
+        }
+    }
+
+    async setTtlAlarm() {
+        try {
+            const ttlSeconds = parseInt(this.env.DO_TTL_SECONDS, 10);
+            if (ttlSeconds && ttlSeconds > 0) {
+                const triggerTime = Date.now() + ttlSeconds * 1000;
+                await this.ctx.storage.setAlarm(triggerTime);
             }
+        } catch (error) {
+            console.error(`SessionDO [${this.ctx.id.toString()}] failed to set TTL alarm:`, error);
         }
     }
 
     async getState() {
-        await this.ensureInitialized();
+        if (this.inMemoryState !== null) {
+            return this.inMemoryState;
+        }
+
         try {
-            const [cID, sID, eID] = await Promise.all([
-                this.ctx.storage.get(CID_COOKIE),
-                this.ctx.storage.get(SID_COOKIE),
-                this.ctx.storage.get(EID_COOKIE)
-            ]);
-            return {cID, sID, eID};
+            const storedState = await this.ctx.storage.get([CID_COOKIE, SID_COOKIE, EID_COOKIE]);
+            this.inMemoryState = {
+                cID: storedState.get(CID_COOKIE) || null,
+                sID: storedState.get(SID_COOKIE) || null,
+                eID: storedState.get(EID_COOKIE) || null,
+            };
         } catch (error) {
             console.error(`SessionDO [${this.ctx.id.toString()}] failed to get state:`, error);
-            return {cID: null, sID: null, eID: null};
+            this.inMemoryState = {cID: null, sID: null, eID: null};
         }
+
+        return this.inMemoryState;
     }
 
-    async persistState(state) {
+    persistState(state) {
+        this.inMemoryState = state;
         try {
-            await this.ctx.storage.put({
-                [CID_COOKIE]: state.cID,
-                [SID_COOKIE]: state.sID,
-                [EID_COOKIE]: state.eID,
-            });
+            this.ctx.storage.put(
+                {
+                    [CID_COOKIE]: state.cID,
+                    [SID_COOKIE]: state.sID,
+                    [EID_COOKIE]: state.eID,
+                },
+                {allowUnconfirmed: true}
+            );
         } catch (error) {
             console.error(`SessionDO [${this.ctx.id.toString()}] failed to persist state:`, error);
         }
@@ -88,20 +99,20 @@ export class SessionDO extends DurableObject {
         ];
     }
 
-    async processSession(request, fpID) {
+    async processSession(request, doName, fpID, isNewDoID, isNewFpID) {
+        await this.setTtlAlarm();
         let currentState = await this.getState();
 
-        // "Trust and Rehydrate" logic
         if (currentState.cID === null) {
+            const cookieHeader = request.headers.get('Cookie');
             const cookieState = {
-                cID: this.storageHelper.get(this.env.CID_COOKIE_NAME || CID_COOKIE, request.headers.get('Cookie')),
-                sID: this.storageHelper.get(this.env.SID_COOKIE_NAME || SID_COOKIE, request.headers.get('Cookie')),
-                eID: this.storageHelper.get(this.env.EID_COOKIE_NAME || EID_COOKIE, request.headers.get('Cookie')),
+                cID: this.storageHelper.get(this.env.CID_COOKIE_NAME || CID_COOKIE, cookieHeader),
+                sID: this.storageHelper.get(this.env.SID_COOKIE_NAME || SID_COOKIE, cookieHeader),
+                eID: this.storageHelper.get(this.env.EID_COOKIE_NAME || EID_COOKIE, cookieHeader),
             };
             if (cookieState.cID) {
                 const rehydrated = this.manager.rehydrate(cookieState);
                 currentState = rehydrated.newState;
-                await this.persistState(currentState);
             }
         }
 
@@ -109,26 +120,20 @@ export class SessionDO extends DurableObject {
             storageHandler: {get: (key) => currentState[key] || null}
         });
 
-        await this.persistState(newState);
+        this.persistState(newState);
         const setCookieHeaders = this.generateCookies(newState);
 
-        const newHeaders = new Headers(request.headers);
-        const serverPrefix = `${this.env.COOKIE_APP_PREFIX || ''}${this.env.SERVER_COOKIE_PREFIX || '_ss_'}`;
-        const cookieParts = [
-            `${serverPrefix}${this.env.CID_COOKIE_NAME || CID_COOKIE}=${newState.cID}`,
-            `${serverPrefix}${this.env.SID_COOKIE_NAME || SID_COOKIE}=${newState.sID}`,
-            `${serverPrefix}${this.env.EID_COOKIE_NAME || EID_COOKIE}=${newState.eID}`,
-            `${serverPrefix}${this.env.FPID_COOKIE_NAME || FPID_COOKIE}=${fpID}`,
-        ];
-        newHeaders.set('Cookie', cookieParts.join('; '));
-        const enrichedRequest = new Request(request, {headers: newHeaders});
-
-        return {
-            enrichedRequest,
+        const sessionContext = {
             ...newState,
             oldState,
             ...changes,
+            doID: doName,
+            fpID,
+            isNewDoID,
+            isNewFpID,
             setCookieHeaders,
         };
+
+        return enrichRequest(request, sessionContext);
     }
 }

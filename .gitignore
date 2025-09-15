@@ -10,4 +10,6 @@ gen
 .DS_Store
 ./node_modules
 node_modules
+./scratch.txt
 
+package-lock.json

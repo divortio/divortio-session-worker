@@ -1,188 +1,93 @@
-# 🚀 divortio-session-worker
+# Divortio Session Worker
 
-![Version](https://img.shields.io/badge/version-5.0.0-blue.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
+[![Version](https://img.shields.io/badge/version-8.0.0-blue.svg)](./docs/API.md)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
-A standalone, resilient, and highly-performant session management service built on Cloudflare Workers and Durable
-Objects. This worker is designed to be used as a "plug-and-play" service by any other Cloudflare Worker, providing
-robust, stateful user session tracking without adding complex logic to the parent application.
+A standalone, resilient, and highly-performant session management service for Cloudflare Workers.
 
-It exposes a powerful and convenient **RPC (Remote Procedure Call) API** that is hardened against common failures. It
-uses a **Hybrid Naming** pattern for Durable Objects to provide race-condition-proof session creation for new users and
-maximum performance for returning users.
+This project provides a stateful session service built on **Durable Objects**. It is exposed to parent workers via a
+simple and resilient **RPC API**, designed to enrich incoming requests with a complete session context while minimizing
+boilerplate.
 
 ---
 
-### Key Features
+## Core Features
 
-* **🔌 Plug-and-Play**: Integrate robust session management into any Cloudflare Worker with a single service binding and
-  one line of code.
-* **🚀 Expressive & Resilient RPC API**: A single `processSession(request)` call provides an enriched request and a
-  complete session context. It includes graceful fallbacks to ensure the session service's failure never crashes the
-  parent application.
-* **🔐 Race-Condition Proof**: Uses a deterministic, colo-agnostic fingerprint to name Durable Objects for new users,
-  guaranteeing session consistency even under concurrent initial requests.
-* **⚡️ High-Performance Lookups**: Uses the stable `cID` to name Durable Objects for returning users, providing the most
-  direct and performant path to their session state.
-* **🍪 Configurable & Persistent Cookies**: Uses a secure, dual-cookie (`HttpOnly` and client-side) strategy with
-  long-lived expirations. All cookie names, prefixes, and the domain are fully configurable in `wrangler.toml`.
-
----
-
-## 🛠️ Deployment Instructions
-
-*(This section remains the same)*
-
-### Step 1: Fork and Clone the Repository
-
-1. **Fork** this repository to your own GitHub account.
-2. **Clone** your forked repository to your local machine.
-
-### Step 2: Configure and Deploy from the Cloudflare Dashboard
-
-1. **Navigate to Workers & Pages**: In the Cloudflare dashboard, go to `Workers & Pages`.
-2. **Create Application**: Click "Create application", then select the "Workers" tab.
-3. **Connect to Git**: Click "Connect with Git" and select the `divortio-session-worker` repository you forked.
-4. **Configure Deployment**:
-    * **Project Name**: Give your service a name (e.g., `divortio-session-worker-prod`).
-    * **Production Branch**: Ensure this is set to `main`.
-    * Click "**Save and Deploy**".
-5. **Configure the Durable Object Binding**:
-    * Go to your new worker's **`Settings`** tab > **`Variables`**.
-    * Scroll down to **Durable Object Bindings** and click "**Add binding**".
-    * **Variable name**: `SESSION_DO`
-    * **Durable Object class**: `SessionDO`
-    * Click "**Save**".
-6. **Trigger a New Deployment**: Go to the "**Deployments**" tab and click "**Deploy**" to apply the binding changes.
-
-Your `divortio-session-worker` is now live and ready to be used by other workers.
-
+* **Middleware-Style API**: A single RPC call returns a cloned `Request` object with a `.session` property containing
+  the full context.
+* **Stateful Session Management**: Utilizes Durable Objects to provide a consistent, single-threaded execution context
+  for session state.
+* **Race-Condition Safety**: Implements a "Hybrid Naming" pattern to deterministically locate Durable Objects,
+  preventing race conditions for new or cookieless clients.
+* **High Performance**: Optimized with an in-memory cache and non-blocking (`allowUnconfirmed`) storage writes to
+  minimize latency.
+* **Automated Garbage Collection**: Uses the Durable Object Alarms API for a configurable TTL to automatically delete
+  stale storage.
+* **Built-in Analytics**: Provides a modular, multi-dataset integration with the Workers Analytics Engine out of the
+  box.
+* **Resilient by Design**: Includes graceful fallbacks to ensure a failure in the session service does not crash the
+  consuming application.
+* **Fully Configurable**: All cookie names, prefixes, domains, and expirations are controlled via `wrangler.toml`.
 
 ---
 
-## 💡 How to Use This Service from a Parent Worker
+## Architectural Pattern
 
-Integrating this session service is now simpler and safer than ever thanks to the hardened RPC API.
+The service uses a **Hybrid Naming** and **Trust and Rehydrate** model to locate the correct Durable Object and manage
+its state.
 
-### Step 1: Bind the Service in the Parent Worker
+1. **Request Arrives at Stateless Worker (`worker.mjs`)**
+    * **`cID` Cookie Exists?**
+        * **Yes (Fast Path)**: The DO is located directly by its name: `getByName(cID)`.
+        * **No (Bootstrap Path)**: A deterministic, colo-agnostic key is generated from the request fingerprint. The DO
+          is located by this key: `getByName(stableKey)`. This prevents race conditions for new users.
 
-In the `wrangler.toml` file of your **parent worker**, add a `[[services]]` binding that points to
-the `divortio-session-worker` you just deployed.
+2. **RPC Call to Stateful `SessionDO`**
+    * **Storage Exists?**
+        * **Yes**: The DO loads its state from its in-memory cache or persistent storage.
+        * **No (Rehydration)**: If the DO's storage is empty (due to garbage collection), it trusts
+          the `HttpOnly, Secure` cookies from the request to seamlessly rehydrate its state.
 
-**`wrangler.toml` (of parent worker):**
+3. **Response**
+    * The `SessionDO` returns a single, enriched `Request` object with the full session context attached to
+      the `.session` property.
 
-```toml
-# ... other configurations for your parent worker ...
+---
 
-[[services]]
-# This is the variable name you will use in your code (e.g., env.SESSION_SERVICE)
-binding = "SESSION_SERVICE"
-# This must match the name of your deployed divortio-session-worker
-service = "divortio-session-worker"
-```
+## Usage Example
 
-### Step 2: Call the Service from Your Parent Worker's Code
-
-In your parent worker's `fetch` handler, make a single RPC call to the `processSession` method. The service is designed
-to be resilient; if it fails, it will return a neutral, "empty" session context, allowing your application to proceed
-without crashing.
-
-**`parent-worker-example.mjs`:**
+The primary goal of this service is to minimize boilerplate in the consuming worker. Integration requires a single
+service binding and one RPC call.
 
 ```javascript
-/**
- * A helper function to apply session cookies to a response in one line.
- */
-function applySessionCookies(response, setCookieHeaders) {
-    if (setCookieHeaders && setCookieHeaders.length > 0) {
-        const newHeaders = new Headers(response.headers);
-        setCookieHeaders.forEach(header => {
-            newHeaders.append('Set-Cookie', header);
-        });
-        return new Response(response.body, {
-            status: response.status,
-            statusText: response.statusText,
-            headers: newHeaders
-        });
-    }
-    return response;
-}
-
+// src/worker.mjs (in the parent application)
 export default {
     async fetch(request, env, ctx) {
-        // 1. Get the complete, rich session context in a single RPC call.
-        const session = await env.SESSION_SERVICE.processSession(request);
+        // 1. Get the single, enriched request from the session service.
+        const enrichedRequest = await env.SESSION_SERVICE.processSession(request);
 
-        // Graceful Fallback Check: If cID is null, the session service may have
-        // encountered an error, but the parent application can still proceed.
-        if (session.cID === null) {
-            console.warn("Could not retrieve session context. Proceeding without session.");
-        }
-
-        // --- Your Application Logic Starts Here ---
-
-        if (session.isNewClient) {
-            console.log(`New client detected! fpID: ${session.fpID}`);
+        // 2. All session data is now available on `enrichedRequest.session`.
+        if (enrichedRequest.session.isNewClient) {
+            console.log(`New client detected. Fingerprint: ${enrichedRequest.session.fpID}`);
         }
         
-        const appResponse = await yourApplicationLogic(session.enrichedRequest, session);
+        // 3. Run application logic with the enriched request.
+        const appResponse = await yourApplicationLogic(enrichedRequest);
         
-        // --- End of Application Logic ---
-
-        // 2. Apply all necessary cookies to the final response.
-        return applySessionCookies(appResponse, session.setCookieHeaders);
+        // 4. Apply cookies to the final response using the built-in helper.
+        return enrichedRequest.session.applySessionCookies(appResponse);
     }
 };
-
-async function yourApplicationLogic(request, session) {
-    const body = `Hello, world! Your Session ID is: ${session.sID || 'N/A'}`;
-    return new Response(body, { headers: { 'Content-Type': 'text/plain' } });
-}
 ```
 
 ---
 
-## 📖 API Documentation
+## 📚 Full Documentation
 
-The service exposes a single, powerful RPC method.
+For detailed information on deployment, the API, and the analytics schema, please refer to the documents in the `/docs`
+directory.
 
-### `processSession(request)`
-
-This is the primary method for interacting with the session service.
-
-* **Parameters**:
-    * `request`: The original `Request` object.
-* **Returns**: `Promise<object>` - A Promise that resolves to a rich session context object. **In the event of a
-  critical failure, this method will return a fallback context where most properties are `null` or empty.**
-
-| Property            | Type             | Description                                                                                                                             |
-| ------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `enrichedRequest`   | `Request`        | A new `Request` object with a `Cookie` header containing all identifiers.                                                               |
-| `cID`               | `string \| null` | The long-term Client ID for the user's browser.                                                                                         |
-| `sID`               | `string \| null` | The ID for the current session.                                                                                                         |
-| `eID`               | `string \| null` | The unique ID for this specific event/request.                                                                                          |
-| `oldState`          | `object`         | The session state *
-before* this request was processed.                                                                                  |
-| `isNewClient`       | `boolean`        | `true` if a `cID` was created for the first time.                                                                                       |
-| `isNewSession`      | `boolean`        | `true` if the session timed out and a new `sID` was generated.                                                                          |
-| `isNewDoID`         | `boolean`        | `true` if this request resulted in interacting with a DO named by a fingerprint.                                                        |
-| `isNewFpID`         | `boolean`        | `true` if the browser fingerprint was missing or has changed.                                                                           |
-| `doID`              | `string \| null` | The name of the DO instance handling this user's state (either a `cID` or a stable key).                                                |
-| `fpID`              | `string \| null` | The calculated browser fingerprint for the current request.                                                                             |
-| `setCookieHeaders`  | `Array`          | An array of `Set-Cookie` header strings to be appended to the final response.                                                           |
-
----
-
-## 🍪 Understanding the Identifiers & Cookies
-
-The service sets several **long-lived, persistent cookies**. The concept of a "session" is a server-side construct
-determined by user activity, not by the lifespan of a browser cookie. Cookie names are fully configurable
-via `wrangler.toml`.
-
-| ID     | Default Key | Purpose                                                                                 |
-| ------ | ----------- | --------------------------------------------------------------------------------------- |
-| `cID`  | `cID`       | A persistent identifier for a unique browser or client.                                 |
-| `sID`  | `sID`       | An identifier representing a single user session. Rotated on the server after inactivity. |
-| `eID`  | `eID`       | A unique identifier for every single request.                                           |
-| `fpID` | `fpID`      | A high-entropy browser fingerprint that serves as a probabilistic identifier.           |
-
+* **[Deployment Guide](./docs/DEPLOYMENT.md)**
+* **[Usage Guide](./docs/USAGE.md)**
+* **[API Reference](./docs/API.md)**
+* **[Analytics Schema](./docs/ANALYTICS.md)**
