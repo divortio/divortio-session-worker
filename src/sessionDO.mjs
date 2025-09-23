@@ -11,9 +11,9 @@
 
 import {DurableObject} from "cloudflare:workers";
 import {sessionManager} from './lib/sessionManager.js';
-import {serverStorage} from './lib/clientServerSession.js';
+import {cookieStorage} from './lib/cookieStorage.js';
 import {enrichRequest} from './lib/enrichRequest.mjs';
-import {CID_COOKIE, SID_COOKIE, EID_COOKIE, FPID_COOKIE} from './lib/constants.mjs';
+import {CID_COOKIE, EID_COOKIE, SID_COOKIE} from './lib/constants.mjs';
 
 export class SessionDO extends DurableObject {
     constructor(ctx, env) {
@@ -21,7 +21,7 @@ export class SessionDO extends DurableObject {
         this.ctx = ctx;
         this.env = env;
         this.inMemoryState = null;
-        this.storageHelper = serverStorage({
+        this.storageHelper = cookieStorage({
             appPrefix: this.env.COOKIE_APP_PREFIX,
             serverPrefix: this.env.SERVER_COOKIE_PREFIX,
             clientPrefix: this.env.CLIENT_COOKIE_PREFIX,

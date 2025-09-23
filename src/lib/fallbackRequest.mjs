@@ -1,6 +1,6 @@
 /*
  * =============================================================================
- * FILE: src/lib/fallback.mjs
+ * FILE: src/lib/fallbackRequest.mjs
  *
  * DESCRIPTION:
  * Provides a graceful fallback mechanism for the session worker. If the
@@ -10,9 +10,7 @@
  */
 
 import {pushID} from './pushID.js';
-import {serverStorage} from './clientServerSession.js';
-import {createBrowserFingerprint, createStableDurableObjectKey} from '../fingerprint.mjs';
-import {CID_COOKIE, SID_COOKIE, EID_COOKIE, FPID_COOKIE} from './constants.mjs';
+import {createBrowserFingerprint, createStableDurableObjectKey} from './fingerprint.mjs';
 import {enrichRequest} from './enrichRequest.mjs';
 
 /**
@@ -22,7 +20,7 @@ import {enrichRequest} from './enrichRequest.mjs';
  * @param {object} env - The environment object to access config.
  * @returns {Request} An enriched request object with a temporary session.
  */
-export function createFallbackRequest(request, env) {
+export function fallbackRequest(request, env) {
     const fallbackId = pushID.newID();
     const fallbackTime = new Date(pushID.decodeTime(fallbackId));
 

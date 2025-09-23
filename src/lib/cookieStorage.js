@@ -1,6 +1,6 @@
 /*
  * =============================================================================
- * FILE: src/lib/clientServerSession.js
+ * FILE: src/lib/cookieStorage.js
  *
  * DESCRIPTION:
  * A server-side storage helper for session management in stateless environments
@@ -10,7 +10,7 @@
  */
 
 /**
- * @typedef {object} ServerStorageConfig
+ * @typedef {object} CookieStorageConfig
  * @property {string} [appPrefix=''] - An optional, application-specific prefix.
  * @property {string} [serverPrefix='_ss_'] - Prefix for HttpOnly server-side cookies.
  * @property {string} [clientPrefix='_cs_'] - Prefix for client-accessible cookies.
@@ -19,13 +19,13 @@
 
 /**
  * Factory that creates a server-side storage handler.
- * @param {ServerStorageConfig} [config={}] - Configuration for the handler.
+ * @param {CookieStorageConfig} [config={}] - Configuration for the handler.
  * @returns {{
  * get: (key: string, cookieHeader?: string | null) => string | null,
  * set: (key: string, value: string, options?: object) => string[],
  * }} A storage handler object.
  */
-export const serverStorage = (config = {}) => {
+export const cookieStorage = (config = {}) => {
     const finalConfig = {
         appPrefix: '',
         serverPrefix: '_ss_',

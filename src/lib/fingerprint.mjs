@@ -8,7 +8,7 @@
  * =============================================================================
  */
 
-import {hashIsh} from './lib/hashIsh.js';
+import {hashIsh} from './hashIsh.js';
 
 const HASH_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz~';
 

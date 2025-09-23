@@ -1,6 +1,6 @@
 /*
  * =============================================================================
- * FILE: src/lib/geo.mjs
+ * FILE: src/lib/geoID.mjs
  *
  * DESCRIPTION:
  * A utility module for handling geographic data extracted from the Cloudflare
@@ -24,10 +24,10 @@
  * city: 'New York',
  * postalCode: '10001'
  * };
- * const geoId = buildGeoId(cf);
+ * const geoId = newGeoID(cf);
  * // -> "NA-US-NY-New York-10001"
  */
-export function buildGeoId(cf) {
+export function newGeoID(cf) {
     if (!cf) return null;
     return [cf.continent, cf.country, cf.regionCode, cf.city, cf.postalCode].filter(Boolean).join('-') || null;
 }

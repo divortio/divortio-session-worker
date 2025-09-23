@@ -11,24 +11,19 @@
  */
 
 import {WorkerEntrypoint} from "cloudflare:workers";
+import {cookieStorage} from './lib/cookieStorage.js';
+import {fallbackRequest} from './lib/fallbackRequest.mjs';
+import {sendAnalytics} from './wae/index.mjs';
+import {CID_COOKIE, FPID_COOKIE} from './lib/constants.mjs';
+import {createBrowserFingerprint, createStableDurableObjectKey, getLocationHint} from './lib/fingerprint.mjs';
 
 export {SessionDO} from './sessionDO.mjs';
-import {serverStorage} from './lib/clientServerSession.js';
-import {createFallbackRequest} from './lib/fallback.mjs';
-import {sendAnalytics} from './wae/index.mjs';
-import {enrichRequest} from './lib/enrichRequest.mjs';
-import {CID_COOKIE, FPID_COOKIE} from './lib/constants.mjs';
-import {
-    createBrowserFingerprint,
-    createStableDurableObjectKey,
-    getLocationHint
-} from './fingerprint.mjs';
 
 export default class extends WorkerEntrypoint {
     async processSession(request, env) {
         let enrichedRequest;
         try {
-            const storageReader = serverStorage({
+            const storageReader = cookieStorage({
                 appPrefix: env.COOKIE_APP_PREFIX,
                 serverPrefix: env.SERVER_COOKIE_PREFIX,
                 clientPrefix: env.CLIENT_COOKIE_PREFIX,
@@ -70,7 +65,7 @@ export default class extends WorkerEntrypoint {
                 message: error.message,
                 stack: error.stack,
             });
-            enrichedRequest = createFallbackRequest(request, env);
+            enrichedRequest = fallbackRequest(request, env);
         }
 
         // Send analytics with the new, flattened parameter structure.

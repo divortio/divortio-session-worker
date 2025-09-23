@@ -32,7 +32,7 @@ Key**. Allows you to efficiently query for the behavior of a specific user or a 
 Analysis**. Low-cardinality string perfect for grouping. `SELECT count() FROM SESSION_CLIENTS GROUP BY blob1`. |
 | `blob2` | `blob` | `request.cf.colo` | **Performance
 Analysis**. Analyze latency or user distribution by Cloudflare data center. |
-| `blob3` | `blob` | `buildGeoId(request.cf)` | **Rich Geographic
+| `blob3` | `blob` | `newGeoID(request.cf)` | **Rich Geographic
 ID**. A concatenated string of continent, country, region, city, and postal code for deep geo-analysis. |
 | `blob4` | `blob` | `cID` | **Dimension**. The Client ID. |
 | `blob5` | `blob` | `sID` | **Dimension**. The Session ID. |

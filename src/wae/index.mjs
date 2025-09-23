@@ -10,7 +10,7 @@
  */
 
 import './schema.mjs'; // Imports the JSDoc type definitions for clarity.
-import {buildGeoId} from '../lib/geo.mjs';
+import {newGeoID} from '../lib/geoID.mjs';
 
 /**
  * Prepares and sends a structured data point to the appropriate Workers
@@ -34,7 +34,7 @@ export function sendAnalytics(request, env, session) {
         const blobs = [
             request.cf?.country || 'unknown',
             request.cf?.colo || 'unknown',
-            buildGeoId(request.cf) || 'unknown',
+            newGeoID(request.cf) || 'unknown',
             session.cID || 'fallback',
             session.sID || 'fallback',
             session.eID || 'fallback',
