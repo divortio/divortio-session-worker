@@ -11,7 +11,7 @@
 
 import {DurableObject} from "cloudflare:workers";
 import {sessionManager} from './lib/sessionManager.js';
-import {cookieStorage} from './lib/cookieStorage.js';
+import {cookieStorage} from './lib/cookieStorage.mjs';
 import {enrichRequest} from './lib/enrichRequest.mjs';
 import {CID_COOKIE, EID_COOKIE, SID_COOKIE} from './lib/constants.mjs';
 
@@ -99,7 +99,7 @@ export class SessionDO extends DurableObject {
         ];
     }
 
-    async processSession(request, doName, fpID, isNewDoID, isNewFpID) {
+    async processSession(request, doName, fpID) {
         await this.setTtlAlarm();
         let currentState = await this.getState();
 

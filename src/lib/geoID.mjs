@@ -24,10 +24,10 @@
  * city: 'New York',
  * postalCode: '10001'
  * };
- * const geoId = newGeoID(cf);
+ * const geoId = buildGeoID(cf);
  * // -> "NA-US-NY-New York-10001"
  */
-export function newGeoID(cf) {
+export function buildGeoID(cf) {
     if (!cf) return null;
     return [cf.continent, cf.country, cf.regionCode, cf.city, cf.postalCode].filter(Boolean).join('-') || null;
 }

@@ -6,18 +6,23 @@
  * The main entry point for the session-worker. This worker acts as a stateless
  * "smart router" and RPC service, implementing a "Hybrid Naming" pattern to
  * locate the correct Durable Object instance and sending a detailed analytics
- * event on every request.
+ * event on every request. This version includes performance optimizations.
  * =============================================================================
  */
 
 import {WorkerEntrypoint} from "cloudflare:workers";
+
+export {SessionDO} from './sessionDO.mjs';
 import {cookieStorage} from './lib/cookieStorage.js';
 import {fallbackRequest} from './lib/fallbackRequest.mjs';
 import {sendAnalytics} from './wae/index.mjs';
 import {CID_COOKIE, FPID_COOKIE} from './lib/constants.mjs';
-import {createBrowserFingerprint, createStableDurableObjectKey, getLocationHint} from './lib/fingerprint.mjs';
-
-export {SessionDO} from './sessionDO.mjs';
+import {
+    getRawFingerprintData,
+    createBrowserFingerprint,
+    createStableDurableObjectKey,
+    getLocationHint
+} from './lib/fingerprint.mjs';
 
 export default class extends WorkerEntrypoint {
     async processSession(request, env) {
@@ -31,12 +36,16 @@ export default class extends WorkerEntrypoint {
             const cookieHeader = request.headers.get('Cookie');
             const existingCID = storageReader.get(env.CID_COOKIE_NAME || CID_COOKIE, cookieHeader);
 
+            // --- Optimized Fingerprint & DO Name Logic ---
+            const rawFingerprintData = getRawFingerprintData(request);
+            const fpID = createBrowserFingerprint(rawFingerprintData);
+
             let doName;
             let isNewDoID = false;
             if (existingCID) {
                 doName = existingCID;
             } else {
-                doName = createStableDurableObjectKey(request);
+                doName = createStableDurableObjectKey(rawFingerprintData);
                 isNewDoID = true;
             }
 
@@ -44,7 +53,6 @@ export default class extends WorkerEntrypoint {
                 locationHint: getLocationHint(request.cf)
             });
 
-            const fpID = createBrowserFingerprint(request);
             const existingFpID = storageReader.get(env.FPID_COOKIE_NAME || FPID_COOKIE, cookieHeader);
             const isNewFpID = !existingFpID || existingFpID !== fpID;
 
@@ -68,7 +76,6 @@ export default class extends WorkerEntrypoint {
             enrichedRequest = fallbackRequest(request, env);
         }
 
-        // Send analytics with the new, flattened parameter structure.
         sendAnalytics(request, env, enrichedRequest.session);
 
         return enrichedRequest;

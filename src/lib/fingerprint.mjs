@@ -1,6 +1,6 @@
 /*
  * =============================================================================
- * FILE: src/fingerprint.mjs
+ * FILE: src/lib/fingerprint.mjs
  *
  * DESCRIPTION:
  * A utility module for creating high-entropy, stable browser fingerprints
@@ -14,47 +14,39 @@ const HASH_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvw
 
 /**
  * Gathers common, high-entropy data points from the request.
- * @private
  * @param {Request} request - The original incoming request object.
- * @param {boolean} [includeColo=true] - Whether to include the Cloudflare colo.
  * @returns {object} An object with raw fingerprint data.
  */
-function getRawFingerprintData(request, includeColo = true) {
-    const data = {
+export function getRawFingerprintData(request) {
+    return {
         ip: request.headers.get('cf-connecting-ip') || '',
         userAgent: request.headers.get('user-agent') || '',
         acceptLang: request.headers.get('accept-language') || '',
         acceptEnc: request.headers.get('accept-encoding') || '',
         tlsCipher: request.cf?.tlsCipher || '',
         httpProtocol: request.cf?.httpProtocol || '',
+        colo: request.cf?.colo || ''
     };
-    if (includeColo && request.cf?.colo) {
-        data.colo = request.cf.colo;
-    }
-    return data;
 }
 
 /**
  * Creates a stable, high-entropy browser fingerprint (fpID).
- * This version INCLUDES the colo and is best used for analytics.
- * @param {Request} request - The original incoming request object.
+ * @param {object} rawData - The raw data object from getRawFingerprintData.
  * @returns {string} A 16-character hash representing the browser fingerprint.
  */
-export function createBrowserFingerprint(request) {
-    const rawData = getRawFingerprintData(request, true);
+export function createBrowserFingerprint(rawData) {
     return hashIsh(rawData, 16, HASH_CHARS);
 }
 
 /**
  * Creates a deterministic, stable key for locating a Durable Object.
- * This version EXCLUDES the colo to prevent race conditions for new users
- * whose initial requests may hit different data centers.
- * @param {Request} request - The original incoming request object.
+ * @param {object} rawData - The raw data object from getRawFingerprintData.
  * @returns {string} A 16-character hash suitable for a DO name.
  */
-export function createStableDurableObjectKey(request) {
-    const rawData = getRawFingerprintData(request, false);
-    return hashIsh(rawData, 16, HASH_CHARS);
+export function createStableDurableObjectKey(rawData) {
+    // Create a new object without the 'colo' property for stability.
+    const {colo, ...stableData} = rawData;
+    return hashIsh(stableData, 16, HASH_CHARS);
 }
 
 

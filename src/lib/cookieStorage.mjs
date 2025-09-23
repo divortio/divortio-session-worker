@@ -1,6 +1,6 @@
 /*
  * =============================================================================
- * FILE: src/lib/cookieStorage.js
+ * FILE: src/lib/cookieStorage.mjs
  *
  * DESCRIPTION:
  * A server-side storage helper for session management in stateless environments
